@@ -1,0 +1,242 @@
+<?php
+/**
+ * @file 
+ * 
+ * Dev tool for looking up views given a node type
+ */
+
+/**
+ * Implementation of hook_menu
+ */
+function viewfinder_menu() {
+  $items = array();
+
+  $items['admin/build/views/viewfinder/bynodetype/%'] = array(
+    'title' => 'Views using a content type',
+    'description' => 'Show all views that use a given content type.',
+    'access callback' => 'user_access',
+    'access arguments' => array('use viewfinder'),
+    'page callback' => 'viewfinder_bynodetype',
+    'page arguments' => array(5),
+  );
+  
+  $items['admin/build/views/viewfinder/blocks/%/%'] = array(
+    'title' => 'Viewfinder show blocks',
+    'description' => 'Show all views blocks that use a given content type.',
+    'access callback' => 'user_access',
+    'access arguments' => array('use viewfinder'),
+    'page callback' => 'viewfinder_blocks',
+    'page arguments' => array(5, 6),
+  );
+  
+  $items['admin/build/views/viewfinder/bynodetype'] = array(
+    'title' => 'Viewfinder',
+    'description' => 'Show all views that use a given content type.',
+    'access callback' => 'user_access',
+    'access arguments' => array('use viewfinder'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('viewfinder_nodetype_form'),
+  );
+  
+  return $items;
+}
+
+/**
+ * Find all views for a given node type
+ * 
+ * @param string $node_type
+ */
+function viewfinder_bynodetype($node_type = null) {
+  
+  if (is_null($node_type)) {
+    return 'Please give content type name as argument';
+  }
+  
+  $rows = array();
+  $views = views_get_all_views();
+  
+  foreach ($views as $view) {
+    
+    // find the default setting
+    // and check if it matches criteria 
+    $default_display = $view->display['default']; 
+    $default_display_match = false; 
+    
+    if (isset($default_display->display_options['filters'])) {
+      foreach ($default_display->display_options['filters'] as $ddfilter) {
+        if (($ddfilter['table'] == 'node') && ($ddfilter['field'] == 'type') && 
+            !is_null($ddfilter['value']) && (in_array($node_type, array_values($ddfilter['value'])))) {
+          $default_display_match = true;   
+          break;       
+        } 
+      }
+    }
+    
+    $match = false;
+    foreach ($view->display as $display_name => $display) {
+      
+      // a match is found if this display has its own filter (i.e. it
+      // has overridden the default display), or if it hasn't a filter but
+      // the default display does (i.e. this display inherited the default
+      // display filters
+      if (isset($display->display_options['filters'])) {
+        foreach ($display->display_options['filters'] as $filter) {
+          if (($filter['table'] == 'node') && ($filter['field'] == 'type') && 
+              !is_null($filter['value']) && (in_array($node_type, array_values($filter['value'])))
+              ) {
+            $match = true;
+          }
+        }
+      } else if ($default_display_match) {
+        $match = true;
+      } 
+      
+      if ($match) {
+        $output_name = $view->name.'/'.$display_name;
+        $edit_link = l('Edit', 'admin/build/views/edit/'.$view->name);
+        $enabled = $view->disabled? t('No') : t('Yes');   
+        $location = _viewfinder_bynodetype_get_location($view, $display);
+        $rows[] = array($output_name, $enabled, $display->display_plugin, $location, $edit_link);           
+      }
+    }
+  }
+  
+  if ($rows) {
+    $headers = array('View name/display', 'Enabled', 'Display', 'Location', 'Edit link');
+    $table = theme_table($headers, $rows);
+    
+    $output = '<h2>'.t('All views and their displays using content type').' <em>'.$node_type.'</em></h2>';
+    $output .= $table;
+  } else {
+    $output = '<p>'.t('No views found for content type').' <em>'.$node_type.'</em></p>';
+  }
+   
+  return $output;
+  
+}
+
+
+/**
+ * Find all views blocks for a given node type
+ *
+ * @param string $view_name
+ * @param string $display_name
+ */
+function viewfinder_blocks($view_name = null, $display_name = null) {
+  if (is_null($view_name) || is_null($display_name)) {
+    return 'Expecting 2 arguments: view_name and display_name';
+  }
+  
+  $output = '';
+  
+  // Find blocks created by views for this view and display
+  $output_rows = array();
+  $query = "SELECT * FROM  `blocks` WHERE  `module` =  'views' AND  `delta` =  '%s'";
+  $results = db_query($query, check_plain($view_name).'-'.check_plain($display_name));
+  while ($r = db_fetch_array($results)) {
+    $output_rows[] = array($r['theme'], $r['region'], nl2br(htmlentities($r['pages'])), $r['status']);
+  }
+  
+  $output .= '<h2>'.t('Blocks for view %v and display %d', array('%v'=>$view_name, '%d'=>$display_name)).' <em>'.$node_type.'</em></h2>';
+  if ($output_rows) {
+    $headers = array('Theme', 'Region', 'Visibility', 'Status');
+    $table = theme_table($headers, $output_rows);
+    $output .= $table;
+  } else {
+    $output .= '<p>'.t('None found').'</p>';
+  }  
+  
+  //What if the view is being generated in PHP code
+  //within the block body? Lets see if we can find any
+  $query = "SELECT * FROM `boxes` LEFT JOIN `blocks` ON `blocks`.`delta`=`boxes`.`bid` WHERE `boxes`.`body` LIKE '%%".check_plain($view_name)."%%".check_plain($display_name)."%%'";
+  $results = db_query($query);
+  $output_rows = array();
+  while ($r = db_fetch_array($results)) {
+//    krumo($r);
+    $output_rows[] = array($r['info'], $r['theme'], $r['region'], nl2br(htmlentities($r['pages'])), $r['status'], l('Edit', 'admin/build/block/configure/block/'.$r['delta']));
+  }  
+  $output .= '<h2>'.t('Blocks that may contain PHP code that calls this view').'</h2>';
+  if ($output_rows) {
+    $headers = array('Title', 'Theme', 'Region', 'Visibility', 'Status', 'Edit link');
+    $table = theme_table($headers, $output_rows);
+    $output .= $table;
+  } else {
+    $output .= '<p>'.t('None found.').'</p>';
+  } 
+  
+  return $output;
+}
+
+/**
+ * FAPI form function
+ * 
+ * @param $form_state
+ */
+function viewfinder_nodetype_form($form_state) {
+  
+  $form = array();
+  
+  $content_types_info = content_types();
+  $node_types = array();
+  foreach ($content_types_info as $type_name => $type_info) {
+    $node_types[$type_name] = $type_info['name'];
+  }
+  
+  $form['nodetype'] = array(
+    '#type' => 'select', 
+    '#title' => t('Select node type'), 
+    '#default_value' => null,
+    '#options' => $node_types,
+  );
+  
+  $form['submit'] = array('#type' => 'submit', '#value' => t('Find views'));
+  
+  return $form;
+  
+}
+
+/**
+ * Implementation of FAPI submit function
+ * @param unknown_type $form
+ * @param unknown_type $form_state
+ */
+function viewfinder_nodetype_form_submit($form, &$form_state) {
+
+//  krumo($form_state);
+  
+  $type = $form_state['values']['nodetype'];
+  drupal_goto('admin/build/views/viewfinder/bynodetype/'.$type);
+  
+}
+
+
+/**
+ * Get location of the view and display. If it's a page, returne the URL link.
+ * 
+ * @param unknown_type $view
+ * @param unknown_type $display
+ */
+function _viewfinder_bynodetype_get_location($view, $display) {
+  
+//  krumo($display);
+  
+  switch ($display->display_plugin) {
+    case 'page': 
+      $location = l($display->display_options['path'], $display->display_options['path']);
+      break;
+
+    case 'block':
+      $location = l('Show block info', 'admin/build/views/viewfinder/blocks/'.$view->name.'/'.$display->id);
+      break;
+      
+    case 'default':
+      $location = '-';
+      break;      
+      
+    default:
+      $location = 'Not found or unrecognised plugin';
+  }
+  
+  return $location;
+  
+}

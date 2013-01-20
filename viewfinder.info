@@ -1,0 +1,11 @@
+name = Viewfinder
+description = Developer tool to find views 
+core = 6.x
+package = Views
+dependencies[] = views
+; Information added by drupal.org packaging script on 2011-02-25
+version = "6.x-1.x-dev"
+core = "6.x"
+project = "viewfinder"
+datestamp = "1298620631"
+
